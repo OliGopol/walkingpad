@@ -209,7 +209,12 @@ details ol{padding-left:1.2em;margin:6px 0}
     const b = $('#connBtn'); b.dataset.state = state;
     $('#connTxt').textContent = state === 'on' ? (name || 'Verbunden') : state === 'connecting' ? 'Verbinde …' : 'Laufband verbinden';
   }
-  async function connect(useFilter){
+  const U = s => '0000' + s + '-0000-1000-8000-00805f9b34fb';
+  const SVC = U('fe00'), CH_N = U('fe01'), CH_W = U('fe02'), FTMS = U('1826');
+  const MODE_LABEL = {all:'Standard', filter:'Namensfilter', plain:'Ohne Dienste'};
+  async function connect(mode){
+    mode = mode || 'all';
+    let stage = 'Gerätesuche';
     if(!navigator.bluetooth){
       showMsg('Dieser Browser kann kein Bluetooth. Öffne die Seite auf dem iPhone in der App „Bluefy“. Ohne Verbindung läuft das Programm als Timer mit Signaltönen.');
       return;
@@ -217,15 +222,20 @@ details ol{padding-left:1.2em;margin:6px 0}
     if(device && device.gatt && device.gatt.connected){ return; }
     try{
       setConn('connecting'); hideMsg();
-      const opts = useFilter
-        ? {filters:[{namePrefix:'KS'},{namePrefix:'WalkingPad'},{namePrefix:'Walking'},{services:[0xFE00]}], optionalServices:[0xFE00,0x1826]}
-        : {acceptAllDevices:true, optionalServices:[0xFE00,0x1826]};
+      const opts =
+        mode === 'filter' ? {filters:[{namePrefix:'KS'},{namePrefix:'WalkingPad'},{namePrefix:'Walking'}], optionalServices:[SVC, FTMS]} :
+        mode === 'plain'  ? {acceptAllDevices:true} :
+                            {acceptAllDevices:true, optionalServices:[SVC, FTMS]};
       device = await navigator.bluetooth.requestDevice(opts);
+      stage = 'Verbinden mit „' + (device.name || 'Gerät') + '“';
       device.addEventListener('gattserverdisconnected', onDisc);
       const server = await device.gatt.connect();
-      const svc = await server.getPrimaryService(0xFE00);
-      notifyCh = await svc.getCharacteristic(0xFE01);
-      writeCh = await svc.getCharacteristic(0xFE02);
+      stage = 'Dienst FE00 bei „' + (device.name || 'Gerät') + '“';
+      const svc = await server.getPrimaryService(SVC);
+      stage = 'Kanäle FE01/FE02';
+      notifyCh = await svc.getCharacteristic(CH_N);
+      writeCh = await svc.getCharacteristic(CH_W);
+      stage = 'Benachrichtigungen';
       await notifyCh.startNotifications();
       notifyCh.addEventListener('characteristicvaluechanged', onData);
       setConn('on', device.name || 'Verbunden');
@@ -233,10 +243,13 @@ details ol{padding-left:1.2em;margin:6px 0}
       if(status === 'paused') showMsg('Verbunden. Tippe auf „Fortsetzen“.', true);
     }catch(e){
       writeCh = null; setConn('off');
-      const en = e && e.name ? e.name : 'Fehler', et = e && e.message ? e.message : String(e);
+      let det;
+      if(e && typeof e === 'object') det = [e.name, e.message, e.code != null ? 'Code ' + e.code : ''].filter(Boolean).join(' | ') || String(e);
+      else det = typeof e + ' ' + String(e);
       let avail = 'unbekannt';
       try{ if(navigator.bluetooth.getAvailability) avail = (await navigator.bluetooth.getAvailability()) ? 'ja' : 'nein'; }catch(_){}
-      showMsg('Verbindung fehlgeschlagen. Meldung: ' + en + ': ' + et + '. Bluetooth verfügbar: ' + avail + '.', false, !useFilter);
+      const others = ['all','filter','plain'].filter(m => m !== mode);
+      showMsg('Methode „' + MODE_LABEL[mode] + '“ gescheitert bei: ' + stage + '. Meldung: ' + det + '. Bluetooth verfügbar: ' + avail + '.', false, others);
     }
   }
   function onDisc(){
@@ -386,21 +399,21 @@ details ol{padding-left:1.2em;margin:6px 0}
     $('#sum').textContent = 'Dauer ' + fmtMin(totalMin);
   }
 
-  function showMsg(t, info, retry){
+  function showMsg(t, info, modes){
     const m = $('#msg'); m.textContent = t;
-    if(retry){
+    (modes || []).forEach(md => {
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'link'; b.style.display = 'block';
-      b.textContent = 'Mit Namensfilter erneut suchen';
-      b.addEventListener('click', () => connect(true));
+      b.textContent = 'Erneut suchen: ' + MODE_LABEL[md];
+      b.addEventListener('click', () => connect(md));
       m.appendChild(b);
-    }
+    });
     m.classList.remove('hidden'); m.classList.toggle('info', !!info);
   }
   function hideMsg(){ $('#msg').classList.add('hidden'); }
 
   /* ---------- Bedienung ---------- */
-  $('#connBtn').addEventListener('click', () => connect(false));
+  $('#connBtn').addEventListener('click', () => connect('all'));
   $('#mainBtn').addEventListener('click', () => {
     if(status === 'running') pause();
     else if(status === 'paused') resume();
