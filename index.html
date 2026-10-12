@@ -119,6 +119,8 @@ details ol{padding-left:1.2em;margin:6px 0}
       <span id="round">Runde 1 von 5</span>
       <span>Ziel <b id="target">3,5 km/h</b></span>
       <span>Band <b id="belt">–</b></span>
+      <span>Schritte <b id="steps">–</b></span>
+      <span>Strecke <b id="dist">–</b></span>
     </div>
     <div class="strip" id="strip"></div>
     <div class="total" id="total">Gesamt 30:00</div>
@@ -128,6 +130,7 @@ details ol{padding-left:1.2em;margin:6px 0}
     <button class="btn" id="mainBtn" type="button">Training starten</button>
     <button class="btn secondary hidden" id="endBtn" type="button">Beenden</button>
   </div>
+  <button class="btn secondary hidden" id="healthBtn" type="button" style="width:100%;margin-bottom:8px">In Health speichern</button>
   <div id="msg" class="msg hidden" role="status"></div>
 
   <section class="card" aria-labelledby="setH">
@@ -201,9 +204,21 @@ details ol{padding-left:1.2em;margin:6px 0}
   function setSpeed(k){ send(CMD.speed(Math.min(6, Math.max(0.5, k)))); }
   function stopBelt(){ send([0xF7,0xA2,0x01,0x00,0,0xFD]); }
 
+  let lastRaw = null, sess = null, lastSession = null;
+  const SHORTCUT = 'WalkingPad Health';
   function onData(e){
     const d = new Uint8Array(e.target.value.buffer);
-    if(d.length > 4 && d[0] === 0xF8 && d[1] === 0xA2){ beltKmh = d[3] / 10; render(); }
+    if(d.length > 4 && d[0] === 0xF8 && d[1] === 0xA2){
+      beltKmh = d[3] / 10;
+      if(d.length >= 14){
+        const raw = {meters:((d[8]<<16)|(d[9]<<8)|d[10]) * 10, steps:(d[11]<<16)|(d[12]<<8)|d[13]};
+        if(sess && lastRaw){
+          ['steps','meters'].forEach(k => { sess[k] += raw[k] >= lastRaw[k] ? raw[k] - lastRaw[k] : raw[k]; }); // Zähler-Reset des Bands abfangen
+        }
+        lastRaw = raw;
+      }
+      render();
+    }
   }
   function setConn(state, name){
     const b = $('#connBtn'); b.dataset.state = state;
@@ -253,7 +268,7 @@ details ol{padding-left:1.2em;margin:6px 0}
     }
   }
   function onDisc(){
-    writeCh = null; beltKmh = null; setConn('off');
+    writeCh = null; beltKmh = null; lastRaw = null; setConn('off');
     if(status === 'running'){
       pause(true);
       showMsg('Verbindung zum Band verloren, Timer pausiert. Das Band läuft eventuell weiter: Fernbedienung nutzen oder neu verbinden und fortsetzen.');
@@ -300,6 +315,7 @@ details ol{padding-left:1.2em;margin:6px 0}
   }
   function start(){
     unlockAudio(); wake(); hideMsg(); build();
+    sess = {steps:0, meters:0, start:new Date(), end:null}; lastSession = null;
     idx = 0; endsAt = Date.now() + phases[0].ms; status = 'running'; lastCount = 0;
     if(!writeCh) showMsg('Kein Band verbunden: Das Programm läuft als Timer mit Signaltönen.', true);
     beltGo(); signal('slow'); render();
@@ -315,12 +331,30 @@ details ol{padding-left:1.2em;margin:6px 0}
     endsAt = Date.now() + remaining; status = 'running'; lastCount = 0;
     beltGo(); render();
   }
+  function closeSession(){
+    if(!sess) return;
+    if(sess.steps > 0 || sess.meters > 0) lastSession = sess;
+    sess = null; render();
+  }
+  function wrapUp(){
+    if(sess) sess.end = new Date();
+    send(CMD.stats()); stopBelt();
+    setTimeout(closeSession, 2500); // letzte Werte vom Band abwarten
+  }
   function finish(){
-    status = 'done'; idx = phases.length; stopBelt(); signal('end'); unwake(); render();
+    status = 'done'; idx = phases.length; wrapUp(); signal('end'); unwake(); render();
   }
   function end(){
-    if(status === 'running' || status === 'paused') stopBelt();
+    if(status === 'running' || status === 'paused') wrapUp();
     status = 'idle'; idx = -1; unwake(); hideMsg(); build(); render();
+  }
+  function toHealth(){
+    const s = lastSession; if(!s) return;
+    const p = n => String(n).padStart(2,'0');
+    const dt = d => p(d.getDate()) + '.' + p(d.getMonth()+1) + '.' + d.getFullYear() + ', ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    const payload = JSON.stringify({schritte:s.steps, km:+(s.meters/1000).toFixed(2), start:dt(s.start), ende:dt(s.end || new Date())});
+    location.href = 'shortcuts://run-shortcut?name=' + encodeURIComponent(SHORTCUT) + '&input=text&text=' + encodeURIComponent(payload);
+    s.sent = true; render();
   }
   function tick(){
     if(status === 'running'){
@@ -368,6 +402,12 @@ details ol{padding-left:1.2em;margin:6px 0}
     $('#round').textContent = 'Runde ' + (status === 'done' ? cfg.rounds : cur.r) + ' von ' + cfg.rounds;
     $('#target').textContent = fmtKmh(kmhFor(status === 'idle' ? phases[0] : cur));
     $('#belt').textContent = writeCh ? (beltKmh == null ? '…' : fmtKmh(beltKmh)) : 'nicht verbunden';
+    const shown = sess || lastSession;
+    $('#steps').textContent = shown ? shown.steps.toLocaleString('de-DE') : '–';
+    $('#dist').textContent = shown ? de(shown.meters / 1000, 2) + ' km' : '–';
+    const hb = $('#healthBtn');
+    hb.classList.toggle('hidden', !(lastSession && !sess && !live));
+    if(lastSession) hb.textContent = lastSession.sent ? 'Erneut an Health senden' : 'In Health speichern';
 
     let rest = left;
     for(let i = Math.max(idx,0) + 1; i < phases.length && status !== 'idle' && status !== 'done'; i++) rest += phases[i].ms;
@@ -420,6 +460,7 @@ details ol{padding-left:1.2em;margin:6px 0}
     else start();
   });
   $('#endBtn').addEventListener('click', end);
+  $('#healthBtn').addEventListener('click', toHealth);
   $('#resetBtn').addEventListener('click', () => {
     const live = status === 'running' || status === 'paused';
     const keep = live ? {rounds:cfg.rounds, slowMin:cfg.slowMin, fastMin:cfg.fastMin} : {};
