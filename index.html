@@ -209,7 +209,7 @@ details ol{padding-left:1.2em;margin:6px 0}
     const b = $('#connBtn'); b.dataset.state = state;
     $('#connTxt').textContent = state === 'on' ? (name || 'Verbunden') : state === 'connecting' ? 'Verbinde …' : 'Laufband verbinden';
   }
-  async function connect(){
+  async function connect(useFilter){
     if(!navigator.bluetooth){
       showMsg('Dieser Browser kann kein Bluetooth. Öffne die Seite auf dem iPhone in der App „Bluefy“. Ohne Verbindung läuft das Programm als Timer mit Signaltönen.');
       return;
@@ -217,7 +217,10 @@ details ol{padding-left:1.2em;margin:6px 0}
     if(device && device.gatt && device.gatt.connected){ return; }
     try{
       setConn('connecting'); hideMsg();
-      device = await navigator.bluetooth.requestDevice({acceptAllDevices:true, optionalServices:[0xFE00]});
+      const opts = useFilter
+        ? {filters:[{namePrefix:'KS'},{namePrefix:'WalkingPad'},{namePrefix:'Walking'},{services:[0xFE00]}], optionalServices:[0xFE00,0x1826]}
+        : {acceptAllDevices:true, optionalServices:[0xFE00,0x1826]};
+      device = await navigator.bluetooth.requestDevice(opts);
       device.addEventListener('gattserverdisconnected', onDisc);
       const server = await device.gatt.connect();
       const svc = await server.getPrimaryService(0xFE00);
@@ -230,8 +233,10 @@ details ol{padding-left:1.2em;margin:6px 0}
       if(status === 'paused') showMsg('Verbunden. Tippe auf „Fortsetzen“.', true);
     }catch(e){
       writeCh = null; setConn('off');
-      if(e && e.name === 'NotFoundError') return; // Auswahl abgebrochen
-      showMsg('Verbindung fehlgeschlagen (' + (e && e.message ? e.message : e) + '). Prüfe: Band eingeschaltet, KS-Fit-App geschlossen, richtiges Gerät gewählt.');
+      const en = e && e.name ? e.name : 'Fehler', et = e && e.message ? e.message : String(e);
+      let avail = 'unbekannt';
+      try{ if(navigator.bluetooth.getAvailability) avail = (await navigator.bluetooth.getAvailability()) ? 'ja' : 'nein'; }catch(_){}
+      showMsg('Verbindung fehlgeschlagen. Meldung: ' + en + ': ' + et + '. Bluetooth verfügbar: ' + avail + '.', false, !useFilter);
     }
   }
   function onDisc(){
@@ -381,11 +386,21 @@ details ol{padding-left:1.2em;margin:6px 0}
     $('#sum').textContent = 'Dauer ' + fmtMin(totalMin);
   }
 
-  function showMsg(t, info){ const m = $('#msg'); m.textContent = t; m.classList.remove('hidden'); m.classList.toggle('info', !!info); }
+  function showMsg(t, info, retry){
+    const m = $('#msg'); m.textContent = t;
+    if(retry){
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'link'; b.style.display = 'block';
+      b.textContent = 'Mit Namensfilter erneut suchen';
+      b.addEventListener('click', () => connect(true));
+      m.appendChild(b);
+    }
+    m.classList.remove('hidden'); m.classList.toggle('info', !!info);
+  }
   function hideMsg(){ $('#msg').classList.add('hidden'); }
 
   /* ---------- Bedienung ---------- */
-  $('#connBtn').addEventListener('click', connect);
+  $('#connBtn').addEventListener('click', () => connect(false));
   $('#mainBtn').addEventListener('click', () => {
     if(status === 'running') pause();
     else if(status === 'paused') resume();
